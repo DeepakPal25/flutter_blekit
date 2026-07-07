@@ -1,0 +1,3 @@
+[submodule "SwiftBLEKit"]
+	path = ios/SwiftBLEKit
+	url = https://github.com/DeepakPal25/SwiftBLEKit.git
