@@ -691,6 +691,19 @@ interface BleHostApi {
   fun writeValue(peripheralId: String, characteristicUuid: String, value: ByteArray, withResponse: Boolean, callback: (Result<Unit>) -> Unit)
   fun setNotify(peripheralId: String, characteristicUuid: String, enabled: Boolean, callback: (Result<Unit>) -> Unit)
   fun peripheralName(peripheralId: String, callback: (Result<String?>) -> Unit)
+  /**
+   * Requests an ATT MTU and returns the negotiated value. On iOS the MTU is
+   * negotiated by the system; the current maximum write length + 3 is
+   * returned instead.
+   */
+  fun requestMtu(peripheralId: String, mtu: Long, callback: (Result<Long>) -> Unit)
+  /**
+   * Requests the runtime Bluetooth permissions the platform needs
+   * (BLUETOOTH_SCAN/CONNECT on Android 12+, location on Android 11 and
+   * below). Returns whether they are granted. On iOS the system prompts on
+   * first use, so this reports whether access is not denied.
+   */
+  fun requestPermissions(callback: (Result<Boolean>) -> Unit)
 
   companion object {
     /** The codec used by BleHostApi. */
@@ -923,6 +936,45 @@ interface BleHostApi {
             val args = message as List<Any?>
             val peripheralIdArg = args[0] as String
             api.peripheralName(peripheralIdArg) { result: Result<String?> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(MessagesPigeonUtils.wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(MessagesPigeonUtils.wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.flutter_blekit.BleHostApi.requestMtu$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val peripheralIdArg = args[0] as String
+            val mtuArg = args[1] as Long
+            api.requestMtu(peripheralIdArg, mtuArg) { result: Result<Long> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(MessagesPigeonUtils.wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(MessagesPigeonUtils.wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.flutter_blekit.BleHostApi.requestPermissions$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            api.requestPermissions{ result: Result<Boolean> ->
               val error = result.exceptionOrNull()
               if (error != null) {
                 reply.reply(MessagesPigeonUtils.wrapError(error))

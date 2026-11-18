@@ -1,121 +1,404 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
+import 'dart:math' as math;
+import 'dart:typed_data';
 
-void main() {
-  runApp(const MyApp());
+import 'package:flutter/material.dart';
+import 'package:flutter_blekit/flutter_blekit.dart';
+import 'package:flutter_blekit/testing.dart';
+
+void main() => runApp(const BleKitDemoApp());
+
+/// Heart-rate + battery monitor demo. "Simulated" mode runs entirely on
+/// [MockBleCentral], so it works on emulators without Bluetooth.
+class BleKitDemoApp extends StatelessWidget {
+  const BleKitDemoApp({super.key, this.startSimulated = true});
+
+  final bool startSimulated;
+
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+    title: 'flutter_blekit demo',
+    theme: ThemeData(colorSchemeSeed: Colors.red, useMaterial3: true),
+    home: ScanScreen(startSimulated: startSimulated),
+  );
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+/// Owns the simulated central and the fake HRM it advertises.
+class Simulator {
+  Simulator() {
+    central.add(device);
+  }
 
-  // This widget is the root of your application.
+  final MockBleCentral central = MockBleCentral();
+  final SimulatedPeripheral device = SimulatedPeripheral(
+    identifier: 'SIM-HRM-0001',
+    name: 'Simulated HRM',
+    services: {
+      BleUuid.heartRate: [BleUuid.heartRateMeasurement],
+      BleUuid.batteryService: [BleUuid.batteryLevel],
+    },
+    values: {
+      BleUuid.batteryLevel: Uint8List.fromList([87]),
+    },
+  );
+
+  Timer? _advertiser;
+  Timer? _heartbeat;
+  final math.Random _random = math.Random();
+
+  /// Advertises the HRM ~1s after scanning starts.
+  void startAdvertising() {
+    _advertiser?.cancel();
+    _advertiser = Timer(const Duration(seconds: 1), () {
+      central.simulateDiscovery(
+        device,
+        advertisement: AdvertisementData(
+          localName: 'Simulated HRM',
+          serviceUuids: [BleUuid.heartRate],
+          isConnectable: true,
+        ),
+        rssi: -58,
+      );
+    });
+  }
+
+  void stopAdvertising() => _advertiser?.cancel();
+
+  /// Pushes a heart-rate measurement (uint8 bpm + one RR interval) every 1s.
+  void startHeartbeat() {
+    _heartbeat ??= Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!central.isConnected(device.identifier)) return;
+      final bpm = 68 + _random.nextInt(10);
+      final rr = (60 / bpm * 1024).round(); // 1/1024 s units
+      device.simulateValue(
+        Uint8List.fromList([0x10, bpm, rr & 0xFF, rr >> 8]),
+        BleUuid.heartRateMeasurement,
+      );
+    });
+  }
+
+  void stopHeartbeat() {
+    _heartbeat?.cancel();
+    _heartbeat = null;
+  }
+
+  void dispose() {
+    stopAdvertising();
+    stopHeartbeat();
+  }
+}
+
+class ScanScreen extends StatefulWidget {
+  const ScanScreen({super.key, this.startSimulated = true});
+
+  final bool startSimulated;
+
+  @override
+  State<ScanScreen> createState() => _ScanScreenState();
+}
+
+class _ScanScreenState extends State<ScanScreen> {
+  late bool _simulated = widget.startSimulated;
+  Simulator? _simulator;
+  LiveBleCentral? _live;
+  StreamSubscription<BleDiscovery>? _scan;
+  StreamSubscription<BleManagerState>? _stateSub;
+  BleManagerState _managerState = BleManagerState.unknown;
+  final Map<String, BleDiscovery> _found = {};
+  final Map<String, String> _names = {};
+  bool _scanning = false;
+  String? _error;
+
+  BleCentral get _central => _simulated
+      ? (_simulator ??= Simulator()).central
+      : (_live ??= LiveBleCentral());
+
+  @override
+  void initState() {
+    super.initState();
+    _watchState();
+  }
+
+  void _watchState() {
+    _stateSub?.cancel();
+    _stateSub = _central.stateUpdates().listen(
+      (s) => setState(() => _managerState = s),
+      onError: (Object e) => setState(() => _error = '$e'),
+    );
+  }
+
+  Future<void> _startScan() async {
+    await _stopScan();
+    setState(() {
+      _found.clear();
+      _error = null;
+    });
+    if (!_simulated) {
+      final granted = await _live!.requestPermissions();
+      if (!granted) {
+        setState(() => _error = 'Bluetooth permissions denied');
+        return;
+      }
+    }
+    setState(() => _scanning = true);
+    _scan = _central
+        .scan(services: [BleUuid.heartRate])
+        .listen(
+          (d) async {
+            final name = await d.peripheral.name ?? d.advertisement.localName;
+            if (!mounted) return;
+            setState(() {
+              _found[d.peripheral.identifier] = d;
+              if (name != null) _names[d.peripheral.identifier] = name;
+            });
+          },
+          onError: (Object e) => setState(() {
+            _error = '$e';
+            _scanning = false;
+          }),
+          onDone: () => setState(() => _scanning = false),
+        );
+    if (_simulated) _simulator!.startAdvertising();
+  }
+
+  Future<void> _stopScan() async {
+    _simulator?.stopAdvertising();
+    await _scan?.cancel();
+    _scan = null;
+    await _central.stopScan();
+    if (mounted) setState(() => _scanning = false);
+  }
+
+  Future<void> _setSimulated(bool value) async {
+    await _stopScan();
+    setState(() {
+      _simulated = value;
+      _found.clear();
+      _managerState = BleManagerState.unknown;
+    });
+    _watchState();
+  }
+
+  Future<void> _open(BleDiscovery d) async {
+    await _stopScan();
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => DeviceScreen(
+          central: _central,
+          peripheral: d.peripheral,
+          name: _names[d.peripheral.identifier] ?? d.peripheral.identifier,
+          simulator: _simulated ? _simulator : null,
+        ),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _scan?.cancel();
+    _stateSub?.cancel();
+    _simulator?.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
+    return Scaffold(
+      appBar: AppBar(title: const Text('flutter_blekit demo')),
+      body: Column(
+        children: [
+          SwitchListTile(
+            key: const Key('simulatedSwitch'),
+            title: const Text('Simulated'),
+            subtitle: Text('Bluetooth: ${_managerState.name}'),
+            value: _simulated,
+            onChanged: _setSimulated,
+          ),
+          if (_error != null)
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: Text(_error!, style: const TextStyle(color: Colors.red)),
+            ),
+          if (_scanning) const LinearProgressIndicator(),
+          Expanded(
+            child: ListView(
+              children: [
+                for (final d in _found.values)
+                  ListTile(
+                    leading: const Icon(Icons.favorite),
+                    title: Text(
+                      _names[d.peripheral.identifier] ??
+                          d.peripheral.identifier,
+                    ),
+                    subtitle: Text('${d.peripheral.identifier}  ${d.rssi} dBm'),
+                    trailing: const Text('Connect'),
+                    onTap: () => _open(d),
+                  ),
+              ],
+            ),
+          ),
+        ],
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _scanning ? _stopScan : _startScan,
+        icon: Icon(_scanning ? Icons.stop : Icons.search),
+        label: Text(_scanning ? 'Stop' : 'Scan'),
+      ),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
+class DeviceScreen extends StatefulWidget {
+  const DeviceScreen({
+    super.key,
+    required this.central,
+    required this.peripheral,
+    required this.name,
+    this.simulator,
+  });
 
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
+  final BleCentral central;
+  final BlePeripheral peripheral;
+  final String name;
+  final Simulator? simulator;
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<DeviceScreen> createState() => _DeviceScreenState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class _DeviceScreenState extends State<DeviceScreen> {
+  late final ConnectionCoordinator _coordinator = ConnectionCoordinator(
+    central: widget.central,
+    peripheral: widget.peripheral,
+  );
+  StreamSubscription<BleConnectionState>? _states;
+  GattSession? _session;
+  BleConnectionState _state = BleConnectionState.disconnected;
+  HeartRateMeasurement? _hr;
+  int? _battery;
+  String? _gattError;
 
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
+  @override
+  void initState() {
+    super.initState();
+    _states = _coordinator.states().listen(_onState);
+    _coordinator.start();
+  }
+
+  void _onState(BleConnectionState s) {
+    debugPrint('[blekit-demo] state: $s');
+    if (!mounted) return;
+    setState(() => _state = s);
+    if (s == BleConnectionState.connected) {
+      unawaited(_attach());
+    } else {
+      unawaited(_detach());
+    }
+  }
+
+  Future<void> _attach() async {
+    await _detach();
+    try {
+      final session = await widget.peripheral.attach(
+        GattProfile([
+          StandardProfile.heartRate((m) {
+            debugPrint(
+              '[blekit-demo] bpm=${m.beatsPerMinute} rr=${m.rrIntervals}',
+            );
+            if (mounted) setState(() => _hr = m);
+          }),
+          service(BleUuid.batteryService, [
+            characteristic(BleUuid.batteryLevel)
+                .readAs(BatteryLevel.fromBytes, _onBattery)
+                .notifyAs(BatteryLevel.fromBytes, _onBattery),
+          ]),
+        ]),
+      );
+      if (!mounted || _state != BleConnectionState.connected) {
+        await session.cancel();
+        return;
+      }
+      _session = session;
+      widget.simulator?.startHeartbeat();
+      setState(() => _gattError = null);
+    } on BleError catch (e) {
+      debugPrint('[blekit-demo] attach failed: $e');
+      if (mounted) setState(() => _gattError = '$e');
+    }
+  }
+
+  void _onBattery(BatteryLevel level) {
+    debugPrint('[blekit-demo] battery=${level.percent}%');
+    if (mounted) setState(() => _battery = level.percent);
+  }
+
+  Future<void> _detach() async {
+    final session = _session;
+    _session = null;
+    await session?.cancel();
+  }
+
+  Future<void> _disconnect() async {
+    await _detach();
+    widget.simulator?.stopHeartbeat();
+    await _coordinator.stop();
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  @override
+  void dispose() {
+    _states?.cancel();
+    widget.simulator?.stopHeartbeat();
+    unawaited(_detach());
+    unawaited(_coordinator.stop());
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
-    return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
+    final hr = _hr;
+    final rr = hr?.rrIntervals
+        .map((s) => '${(s * 1000).round()} ms')
+        .join(', ');
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) unawaited(_disconnect());
+      },
+      child: Scaffold(
+        appBar: AppBar(title: Text(widget.name)),
+        body: ListView(
+          padding: const EdgeInsets.all(16),
           children: [
-            const Text('You have pushed the button this many times:'),
+            Text('State: $_state', key: const Key('stateText')),
+            const SizedBox(height: 24),
             Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+              hr == null ? '-- bpm' : '${hr.beatsPerMinute} bpm',
+              style: Theme.of(context).textTheme.displayMedium,
+            ),
+            Text('RR: ${rr == null || rr.isEmpty ? '--' : rr}'),
+            const SizedBox(height: 16),
+            Text('Battery: ${_battery == null ? '--' : '$_battery%'}'),
+            if (_gattError != null)
+              Text(_gattError!, style: const TextStyle(color: Colors.red)),
+            const SizedBox(height: 24),
+            if (widget.simulator != null)
+              OutlinedButton(
+                onPressed: _state == BleConnectionState.connected
+                    ? () => widget.simulator!.central.simulateDisconnect(
+                        widget.simulator!.device,
+                      )
+                    : null,
+                child: const Text('Simulate drop'),
+              ),
+            const SizedBox(height: 8),
+            FilledButton(
+              onPressed: _disconnect,
+              child: const Text('Disconnect'),
             ),
           ],
         ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
       ),
     );
   }

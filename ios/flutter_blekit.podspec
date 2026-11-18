@@ -12,7 +12,7 @@ DSL, typed standard profiles, and hardware-free test doubles for Flutter,
 with iOS backed directly by SwiftBLEKit's Core Bluetooth adapter
 (https://github.com/DeepakPal25/SwiftBLEKit).
                        DESC
-  s.homepage         = 'https://github.com/DeepakPal25/SwiftBLEKit'
+  s.homepage         = 'https://github.com/DeepakPal25/flutter_blekit'
   s.license          = { :file => '../LICENSE' }
   s.author           = { 'DeepakPal25' => 'noreply@example.com' }
   s.source           = { :path => '.' }

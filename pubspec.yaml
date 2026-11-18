@@ -5,16 +5,19 @@ description: >-
   standard profiles, a multi-device connection pool, and hardware-free test
   doubles. iOS is backed directly by SwiftBLEKit's Core Bluetooth adapter.
 version: 0.1.0
-homepage: https://github.com/DeepakPal25/SwiftBLEKit
-publish_to: 'none'
+homepage: https://github.com/DeepakPal25/flutter_blekit
+repository: https://github.com/DeepakPal25/flutter_blekit
+issue_tracker: https://github.com/DeepakPal25/flutter_blekit/issues
+topics: [bluetooth, ble, bluetooth-low-energy, testing]
 
 environment:
   sdk: ^3.10.4
-  flutter: '>=3.3.0'
+  flutter: '>=3.38.0'
 
 dependencies:
   flutter:
     sdk: flutter
+  meta: ^1.17.0
 
 dev_dependencies:
   flutter_test:

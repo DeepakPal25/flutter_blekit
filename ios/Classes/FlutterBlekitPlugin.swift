@@ -1,3 +1,4 @@
+import CoreBluetooth
 import Flutter
 import Foundation
 #if os(iOS)
@@ -12,7 +13,10 @@ import Foundation
 /// (vendored under `ios/SwiftBLEKit` and compiled into this pod).
 public class FlutterBlekitPlugin: NSObject, FlutterPlugin, BleHostApi {
 
-  private let central = LiveCentralManager(restoreIdentifier: "flutter_blekit.central")
+  // No restore identifier: vendored LiveCentralManager creates CBCentralManager with a nil
+  // delegate, and iOS throws NSInternalInconsistencyException when a restore id is set
+  // without a willRestoreState: delegate. Re-enable once SwiftBLEKit passes `delegate: self`.
+  private let central = LiveCentralManager()
   private let flutterApi: BleFlutterApi
 
   private let lock = NSLock()
@@ -114,12 +118,12 @@ public class FlutterBlekitPlugin: NSObject, FlutterPlugin, BleHostApi {
 
   // MARK: - BleHostApi
 
-  public func getState() throws -> BleManagerStateMessage {
+  func getState() throws -> BleManagerStateMessage {
     lock.guarded { cachedState }
   }
 
-  public func startScan(serviceUuids: [String]?) throws {
-    let services = serviceUuids?.map(BLEUUID.init)
+  func startScan(serviceUuids: [String]?) throws {
+    let services = serviceUuids?.map { BLEUUID($0) }
     scanTask?.cancel()
     scanTask = Task { [weak self] in
       guard let self else { return }
@@ -137,13 +141,13 @@ public class FlutterBlekitPlugin: NSObject, FlutterPlugin, BleHostApi {
     }
   }
 
-  public func stopScan() throws {
+  func stopScan() throws {
     scanTask?.cancel()
     scanTask = nil
     Task { await central.stopScan() }
   }
 
-  public func connect(peripheralId: String, timeoutMs: Int64?, completion: @escaping (Result<Void, Error>) -> Void) {
+  func connect(peripheralId: String, timeoutMs: Int64?, completion: @escaping (Result<Void, Error>) -> Void) {
     guard let peripheral = peripheral(for: peripheralId) else {
       completion(.failure(PigeonError.peripheralNotFound))
       return
@@ -159,7 +163,7 @@ public class FlutterBlekitPlugin: NSObject, FlutterPlugin, BleHostApi {
     }
   }
 
-  public func disconnect(peripheralId: String, completion: @escaping (Result<Void, Error>) -> Void) {
+  func disconnect(peripheralId: String, completion: @escaping (Result<Void, Error>) -> Void) {
     guard let peripheral = peripheral(for: peripheralId) else {
       completion(.success(()))
       return
@@ -170,7 +174,7 @@ public class FlutterBlekitPlugin: NSObject, FlutterPlugin, BleHostApi {
     }
   }
 
-  public func retrievePeripheral(identifier: String, completion: @escaping (Result<PeripheralInfoMessage?, Error>) -> Void) {
+  func retrievePeripheral(identifier: String, completion: @escaping (Result<PeripheralInfoMessage?, Error>) -> Void) {
     guard let uuid = UUID(uuidString: identifier) else {
       completion(.success(nil))
       return
@@ -186,14 +190,14 @@ public class FlutterBlekitPlugin: NSObject, FlutterPlugin, BleHostApi {
     }
   }
 
-  public func discoverServices(peripheralId: String, serviceUuids: [String]?, completion: @escaping (Result<[String], Error>) -> Void) {
+  func discoverServices(peripheralId: String, serviceUuids: [String]?, completion: @escaping (Result<[String], Error>) -> Void) {
     guard let peripheral = peripheral(for: peripheralId) else {
       completion(.failure(PigeonError.peripheralNotFound))
       return
     }
     Task {
       do {
-        let services = try await peripheral.discoverServices(serviceUuids?.map(BLEUUID.init))
+        let services = try await peripheral.discoverServices(serviceUuids?.map { BLEUUID($0) })
         completion(.success(services.map(\.rawValue)))
       } catch {
         completion(.failure(PigeonError(error)))
@@ -201,7 +205,7 @@ public class FlutterBlekitPlugin: NSObject, FlutterPlugin, BleHostApi {
     }
   }
 
-  public func discoverCharacteristics(
+  func discoverCharacteristics(
     peripheralId: String,
     serviceUuid: String,
     characteristicUuids: [String]?,
@@ -214,7 +218,7 @@ public class FlutterBlekitPlugin: NSObject, FlutterPlugin, BleHostApi {
     Task {
       do {
         let characteristics = try await peripheral.discoverCharacteristics(
-          characteristicUuids?.map(BLEUUID.init),
+          characteristicUuids?.map { BLEUUID($0) },
           for: BLEUUID(serviceUuid)
         )
         completion(.success(characteristics.map(\.rawValue)))
@@ -229,7 +233,7 @@ public class FlutterBlekitPlugin: NSObject, FlutterPlugin, BleHostApi {
     }
   }
 
-  public func readValue(peripheralId: String, characteristicUuid: String, completion: @escaping (Result<FlutterStandardTypedData, Error>) -> Void) {
+  func readValue(peripheralId: String, characteristicUuid: String, completion: @escaping (Result<FlutterStandardTypedData, Error>) -> Void) {
     guard let peripheral = peripheral(for: peripheralId) else {
       completion(.failure(PigeonError.peripheralNotFound))
       return
@@ -244,7 +248,7 @@ public class FlutterBlekitPlugin: NSObject, FlutterPlugin, BleHostApi {
     }
   }
 
-  public func writeValue(
+  func writeValue(
     peripheralId: String,
     characteristicUuid: String,
     value: FlutterStandardTypedData,
@@ -265,7 +269,7 @@ public class FlutterBlekitPlugin: NSObject, FlutterPlugin, BleHostApi {
     }
   }
 
-  public func setNotify(peripheralId: String, characteristicUuid: String, enabled: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
+  func setNotify(peripheralId: String, characteristicUuid: String, enabled: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
     guard let peripheral = peripheral(for: peripheralId) else {
       completion(.failure(PigeonError.peripheralNotFound))
       return
@@ -280,7 +284,7 @@ public class FlutterBlekitPlugin: NSObject, FlutterPlugin, BleHostApi {
     }
   }
 
-  public func peripheralName(peripheralId: String, completion: @escaping (Result<String?, Error>) -> Void) {
+  func peripheralName(peripheralId: String, completion: @escaping (Result<String?, Error>) -> Void) {
     guard let peripheral = peripheral(for: peripheralId) else {
       completion(.success(nil))
       return
@@ -288,6 +292,30 @@ public class FlutterBlekitPlugin: NSObject, FlutterPlugin, BleHostApi {
     Task {
       completion(.success(await peripheral.name))
     }
+  }
+
+  /// iOS negotiates the MTU itself; report `maximumWriteValueLength + 3`.
+  /// SwiftBLEKit keeps its `CBPeripheral` private (vendored, not modified),
+  /// so it is read via reflection, falling back to the default ATT MTU (23).
+  func requestMtu(peripheralId: String, mtu: Int64, completion: @escaping (Result<Int64, Error>) -> Void) {
+    guard let peripheral = peripheral(for: peripheralId) else {
+      completion(.failure(PigeonError.peripheralNotFound))
+      return
+    }
+    let cb = Mirror(reflecting: peripheral).children.lazy.compactMap { $0.value as? CBPeripheral }.first
+    let length = cb?.maximumWriteValueLength(for: .withoutResponse) ?? 20
+    completion(.success(Int64(length + 3)))
+  }
+
+  /// The system prompts on first Core Bluetooth use; report "not denied".
+  func requestPermissions(completion: @escaping (Result<Bool, Error>) -> Void) {
+    let status: CBManagerAuthorization
+    if #available(iOS 13.1, *) {
+      status = CBManager.authorization
+    } else {
+      status = CBCentralManager().authorization
+    }
+    completion(.success(status != .denied && status != .restricted))
   }
 }
 

@@ -654,6 +654,15 @@ protocol BleHostApi {
   func writeValue(peripheralId: String, characteristicUuid: String, value: FlutterStandardTypedData, withResponse: Bool, completion: @escaping (Result<Void, Error>) -> Void)
   func setNotify(peripheralId: String, characteristicUuid: String, enabled: Bool, completion: @escaping (Result<Void, Error>) -> Void)
   func peripheralName(peripheralId: String, completion: @escaping (Result<String?, Error>) -> Void)
+  /// Requests an ATT MTU and returns the negotiated value. On iOS the MTU is
+  /// negotiated by the system; the current maximum write length + 3 is
+  /// returned instead.
+  func requestMtu(peripheralId: String, mtu: Int64, completion: @escaping (Result<Int64, Error>) -> Void)
+  /// Requests the runtime Bluetooth permissions the platform needs
+  /// (BLUETOOTH_SCAN/CONNECT on Android 12+, location on Android 11 and
+  /// below). Returns whether they are granted. On iOS the system prompts on
+  /// first use, so this reports whether access is not denied.
+  func requestPermissions(completion: @escaping (Result<Bool, Error>) -> Void)
 }
 
 /// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
@@ -865,6 +874,46 @@ class BleHostApiSetup {
       }
     } else {
       peripheralNameChannel.setMessageHandler(nil)
+    }
+    /// Requests an ATT MTU and returns the negotiated value. On iOS the MTU is
+    /// negotiated by the system; the current maximum write length + 3 is
+    /// returned instead.
+    let requestMtuChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.flutter_blekit.BleHostApi.requestMtu\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      requestMtuChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let peripheralIdArg = args[0] as! String
+        let mtuArg = args[1] as! Int64
+        api.requestMtu(peripheralId: peripheralIdArg, mtu: mtuArg) { result in
+          switch result {
+          case .success(let res):
+            reply(wrapResult(res))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      requestMtuChannel.setMessageHandler(nil)
+    }
+    /// Requests the runtime Bluetooth permissions the platform needs
+    /// (BLUETOOTH_SCAN/CONNECT on Android 12+, location on Android 11 and
+    /// below). Returns whether they are granted. On iOS the system prompts on
+    /// first use, so this reports whether access is not denied.
+    let requestPermissionsChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.flutter_blekit.BleHostApi.requestPermissions\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      requestPermissionsChannel.setMessageHandler { _, reply in
+        api.requestPermissions { result in
+          switch result {
+          case .success(let res):
+            reply(wrapResult(res))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      requestPermissionsChannel.setMessageHandler(nil)
     }
   }
 }

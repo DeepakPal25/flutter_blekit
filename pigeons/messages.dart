@@ -176,6 +176,19 @@ abstract class BleHostApi {
 
   @async
   String? peripheralName(String peripheralId);
+
+  /// Requests an ATT MTU and returns the negotiated value. On iOS the MTU is
+  /// negotiated by the system; the current maximum write length + 3 is
+  /// returned instead.
+  @async
+  int requestMtu(String peripheralId, int mtu);
+
+  /// Requests the runtime Bluetooth permissions the platform needs
+  /// (BLUETOOTH_SCAN/CONNECT on Android 12+, location on Android 11 and
+  /// below). Returns whether they are granted. On iOS the system prompts on
+  /// first use, so this reports whether access is not denied.
+  @async
+  bool requestPermissions();
 }
 
 /// Native -> Dart events. The wire-level equivalent of SwiftBLEKit's
